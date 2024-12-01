@@ -2,6 +2,7 @@
 Concrete Strength Prediction with R: A Machine Learning Workflow for Compressive Strength Regression
 
 The goal of this project is to find out an efficient regression model trained and tested on a dataset available on Kaggle.com (https://www.kaggle.com/datasets/prathamtripathi/regression-with-neural-networking).
+
 Beside this, I've set a couple of more specific aims:
 1.  evaluate the impact of applying preprocessing steps either to every variable or to a limited group of them,
 2.  optimizing data visualization in order to increase the overall readability of the document.
