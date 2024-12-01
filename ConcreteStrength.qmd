@@ -1,0 +1,900 @@
+---
+title: "Concrete Strength Prediction with R: A Machine Learning Workflow for Compressive Strength Regression"
+subtitle: "End-to-End Modeling with workflow_set and Visual Insights via patchwork"
+author: "Damiano Pincolini"
+format: 
+  pdf:
+    engine: xelatex 
+    toc: true        # Abilita l'indice per il formato PDF
+    toc-depth: 4 
+date: 2024-11-23
+date-format: iso
+editor: visual
+---
+
+# 1. PREFACE
+
+## 1.1. Project goal
+
+The overall goal of this project is to find out an efficient regression model trained and tested on a dataset available on Kaggle.com (https://www.kaggle.com/datasets/prathamtripathi/regression-with-neural-networking). Beside this, there are a couple of more specific aims to be set:
+
+1.  evaluate the impact of applying preprocessing steps either to every variable or to a limited group of them,
+
+2.  optimizing data visualization in order to increase the overall readability of the document.
+
+As far as point 1 is concerned, the main focus is on usage of the workflow_set package, while for second point patchwork and kableExtra packages are involved.
+
+To keep the whole process fast and fluent, I will not use a wide set of engines since the main focus is on how to manage preprocessing and to improved data visualization.
+
+## 1.2. Loading packages
+
+I avoid recalling the script that loads packages; I just point out the choiche of the tidymodels' ecosistem along with kableExtra and patchwork.
+
+```{r}
+#| echo: false
+#| output: false
+pacman::p_load(tidyverse,
+               SmartEDA,
+               DescTools,
+               DataExplorer,
+               factoextra,
+               ggcorrplot,
+               GGally,
+               ggforce,
+               corrplot,
+               cowplot,
+               tidymodels,
+               randomForest,
+               kknn,
+               nnet,
+               kernlab,
+               broom,
+               themis,
+               rpart.plot,
+               vip,
+               shapviz,
+               knitr,
+               kableExtra,
+               patchwork)
+
+```
+
+## 1.3. Data loading and content analysis
+
+After downloading the .csv file from kaggle.com (see link above) and storing, I have saved it into R environment as "DataOrigin" dataset.
+
+```{r}
+#| include: false
+
+DataOrigin <- read_csv2("C:/Users/casa/Documents/Damiano/R/Mentoring/19. concreteStrenght/rawData/Concrete_Data.csv")
+```
+
+## 1.4. Dataset analysis
+
+### 1.4.1. Dataset structure, datatype and quality analysis
+
+With a help from SmartEDA and kableExtra packages, it's possible to produce two tables to have a bird's eye view on DataOrigin dataset.
+
+```{r}
+#| echo: false
+#| output: false
+
+options(scipen = 999)
+```
+
+```{r}
+#| echo: false
+
+DataOriginQuality1 <- ExpData(DataOrigin, type = 1)
+
+DataOriginQuality1|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "hold_position"),
+                position = "left",
+                full_width = FALSE)
+```
+
+The dataset content appears clean: there are eight predictors and a target variable (CompressiveStrenght), all featuresare numerical and there's no missing value. It doesn't seem necessary to trasform any datatype from numeric to factor.
+
+```{r}
+#| echo: false
+
+DataOriginQuality2 <- ExpData(DataOrigin, type = 2)
+
+DataOriginQuality2|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "scale_down"),
+                position = "left",
+                full_width = FALSE)
+```
+
+Also from this view the dataset seems very "smooth".
+
+I want to have a fast glance to the main statistics in order to understand if there could be some weird value. I'll simply use the basic summary() command.
+
+```{r}
+#| echo: false 
+
+DataOrigin|> ExpNumStat(by = "A",
+                       Qnt = c(0.25, 0.75),
+                       MesofShape = 2,
+                       Outlier = TRUE,
+                       round = 2)|>
+  select(variable = Vname,
+         min,
+         max,
+         mean,
+         median,
+         quartile1 = "25%",
+         quartile3 = "75%",
+         SD,
+         IQR)|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "scale_down"),
+                position = "center",
+                full_width = FALSE)
+```
+
+The ranges between minimun and maximum values are generally pretty visible considering that (a part from days and Strenght) the measure is the same (kg/m3).
+
+It could be interesting considering days not only in terms of single numbers of days, but also in terms of value ranges since it is probably more relevant the difference between the concrete of 0-to-5 days and 10-to-15 days, rather than the difference between a concrete made 3 or 5 days ago. Specifically, it seems that a meaningful set of ranges is the following:
+
+-   1 day: to assess the initial behavior of the concrete.
+
+-   7 days: to get a preliminary indication of its strength.
+
+-   28 days: this is the standard for measuring the final compressive strength of concrete. Many concrete mixes reach about 70-80% of their total strength by this period.
+
+-   Beyond 28 days (e.g., 90 days, 180 days, or even 1 year): this is considered the long-term. During this period, supplementary cementitious materials like blast furnace slag or fly ash can continue reacting (through pozzolanic processes), further improving the compressive strength.
+
+Furthermore, there's a combination of two concret's "ingredients" that is specifically useful: Water/Cement Ratio. This is the most critical parameter for compressive strength. A lower ratio (less water) increases compressive strength because it reduces the internal porosity of the concrete. However, if the ratio is too low, it can lead to compaction difficulties. So, compressive strength is inversely proportional to the w/c ratio. There are empirical formulas (such as Abrams' law) that relate compressive strength to the water/cement ratio. Note that the unique values of Days columns are 14, which is quite a low number for a thousand and more istances. It's quite fair to detect a clear pattern of measurement in terms of days from concrete preparation.
+
+```{r}
+#| echo: false
+
+DataOrigin|>
+  group_by(Days)|>
+  summarize(count = n())|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "hold_position"),
+                position = "left",
+                full_width = FALSE)
+```
+
+There are two measurement for both 90 e 91 days: I'll keep them together into the "90 days" value. The 120 days value has only three instances. I assume they can be represented by 100 days value. The same goes for 360 and 365 days. I'll merge the two cases since, especially the first one, has got so little cases (only 6). It could be useful to break down compressive strength into the following catogories:
+
+1.  Poor Strength: \< 10 MPa: Concrete with compressive strength in this range is considered very low quality and would typically be unsuitable for most structural applications.
+
+2.  Fair Strength: 10 MPa - 20 MPa: Concrete in this range is considered low-strength and would be used for non-critical applications, like sidewalks or low-load structures.
+
+3.  Good Strength: 20 MPa - 35 MPa: This is a common range for general-purpose concrete used in residential buildings and standard construction projects.
+
+4.  Very Good/Structural Strength: 35 MPa - 50 MPa: Concrete in this range is used for more demanding structures such as larger buildings or industrial facilities.
+
+5.  High/Excellent Strength: \> 50 MPa: High-strength concrete, often used in high-rise buildings, bridges, and infrastructure projects requiring superior durability.
+
+### 1.4.2. Data featuring
+
+For further steps, I want to create the following variables:
+
+1.  dayRange (categorical) that represents the evolution of strenght based on the numbers of day of concrete preparation.
+
+2.  waterCementRatio (numerical).
+
+3.  StrengthCategory (categorical).
+
+```{r}
+#| echo: false
+
+Data <- DataOrigin|>
+  mutate(dayRange = as_factor(case_when(Days == 1 ~ "1 day",
+                                        Days == 3 ~ "3 days",
+                                        Days == 7 ~ "7 days",
+                                        Days == 14 ~ "14 days",
+                                        Days == 28 ~ "28 days",
+                                        Days == 56 ~ "56 days",
+                                        Days == 90 | Days == 91 ~ "90 days",
+                                        Days == 100 | Days == 120 ~ "100 days",
+                                        Days == 180 ~ "180 days",
+                                        Days == 270 ~ "270 days",
+                                        Days == 360 | Days == 365 ~ "365 days")),
+         dayRange = fct_relevel(dayRange, c("1 day",  "3 days", "7 days", "14 days",
+                                            "28 days", "56 days", "90 days",
+                                            "100 days", "180 days",
+                                            "270 days", "365 days")),
+         waterCementRatio = round(Water/Cement, 2),
+         StrengthCategory = as_factor(case_when(CompressiveStrength < 10 ~ "Poor",
+                                                CompressiveStrength >= 10 & CompressiveStrength < 20 ~ "Fair",
+                                                CompressiveStrength >= 20 & CompressiveStrength < 35 ~ "Good",
+                                                CompressiveStrength >= 35 & CompressiveStrength < 50 ~ "Very good",
+                                                CompressiveStrength >= 50 ~ "Excellent")),
+         StrengthCategory = fct_relevel(StrengthCategory, c("Poor",  "Fair", "Good", "Very good", "Excellent")))
+```
+
+## 1.5. Data partitioning
+
+For data partitioning a classical 80/20 proportion between train and test datasets has been choosen to create the training and the test set (DataTrain and DataTest respectively).
+
+```{r}
+#| echo: false
+#| warning: false
+
+set.seed(789, sample.kind = "Rounding")
+```
+
+```{r}
+#| echo: false
+
+DataSplit <- Data|>
+  initial_split(prop = 0.80)
+
+DataTrain <- training(DataSplit)
+
+DataTest <- testing(DataSplit)
+```
+
+# 2. EXPLORATIVE DATA ANALYSIS
+
+## 2.1 Feature analysis
+
+### 2.1.1. Target analysis
+
+First of all, I want to see the distribution of the target values. Again, SmartEDA package provides with avery useful command: ExpNumStat() that returns a set of statistics that, after a little manipulation, can be visualized in a functional way throught the patchwork package.
+
+```{r}
+#| echo: false
+
+EdaNum <- DataTrain|>
+  ExpNumStat(by = "GA",
+             gp = "StrengthCategory",
+             Qnt = c(0.25, 0.75),
+             MesofShape = 2,
+             Outlier = TRUE,
+             round = 2)
+
+EdaDistributionShape <- EdaNum|>
+  select(Vname, Group, Kurtosis, Skewness)|>
+  filter(Group == "StrengthCategory:All")|>
+  arrange(desc(Skewness))
+
+p1 <- DataTrain|>
+  ggplot(aes(CompressiveStrength))+
+  geom_density()+
+  labs(title = "Target variable density")
+
+p2 <- EdaDistributionShape|>
+  ggplot(aes(Vname, Skewness))+
+  geom_col(fill = "blue", alpha = 0.7)+
+  geom_text(aes(label = round(Skewness, 1)), 
+            hjust = -0.2, 
+            color = "darkblue", 
+            size = 2) +  # Aggiunge i valori accanto alle barre
+  coord_flip()+
+  labs(x = "Skewness",
+       y = "Predictors",
+       title ="Skewness")+
+  theme(plot.title = element_text(size = 14),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.text.x = element_text(size = 7),
+        axis.text.y = element_text(size = 7))               
+
+p3 <- EdaDistributionShape|>
+  ggplot(aes(Vname, Kurtosis))+
+  geom_col(fill = "red", alpha = 0.7)+
+  geom_text(aes(label = round(Kurtosis, 1)), 
+            hjust = -0.2, 
+            color = "darkred", 
+            size = 3) +  # Aggiunge i valori accanto alle barre
+  geom_hline(aes(yintercept = 3),
+             color = "darkred",
+             linewidth = 0.3)+
+  coord_flip()+
+  labs(x = "Kurtosis",
+       y = "Predictors",
+       title = "Kurtosis")+
+  theme(plot.title = element_text(size = 14),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.text.x = element_text(size = 7),
+        axis.text.y = element_text(size = 7))
+```
+
+```{r}
+#| echo: false
+
+p1 + (p2 / p3)+
+  plot_layout(ncol = 2,
+              nrow = 1,
+              widths = c(2,1),
+              heights = NULL)
+```
+
+Days feature appears pretty skewed and unbalanced.
+
+```{r}
+#| echo: false
+
+DataTrainLong <- DataTrain|>
+  select(-c(CompressiveStrength, dayRange))|>
+  pivot_longer(cols = -c(StrengthCategory),
+               names_to = "variable",
+               values_to = "value")
+
+DataTrainLong|>
+  ggplot(aes(x = value,
+             fill = StrengthCategory))+
+  geom_boxplot()+
+  facet_wrap(~ variable, scales = "free")+
+  labs(x = "Value",
+       title = "Predictors box-plot") +
+  theme(legend.position = "bottom",
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8),
+        plot.title = element_text(size = 14),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.text.x = element_text(size = 7),
+        axis.text.y = element_blank(),
+        strip.text = element_text(size = 10))
+```
+
+Box-plots show the presence of outliers, but the dataset content backs the idea that each dataset's instance is referred to a different building purpose for which that specific concrete composition has been defined: this should advice not to handle any "extreme" value.
+
+### 2.1.2. Univariate predictors analysis
+
+In order to have a bird's eye view of the different behaviour of how target variable "replies" to each single predictor, I prefer a wrapped collection of each feature's plot rather than a sequence of single plots to improve overall readability and ease comparisons. To do that, I will reframe with pivot_longer() command the DataTrain tibble bringing the 20 feature into one (longer) column that is going to include every single variable. I'll aggregate predictors according to target value, but I won't use the continuous output "CompressiveStength" (too many values would lead to too many plots compromising readability), but the new-created categorical "strenghtCategory".
+
+```{r}
+#| echo: false
+
+DataTrainLong|>
+  ggplot(aes(x = value,
+             fill = StrengthCategory))+
+  geom_density(alpha = 0.3)+
+  facet_wrap(~ variable,
+             ncol = 3,
+             scales = "free")+
+  labs(x = "Value",
+       y = "Density",
+       title = "Predictors distribution")+
+  theme(legend.position = "bottom",
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8),
+        plot.title = element_text(size = 14),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.text.x = element_text(size = 7),
+        axis.text.y = element_text(size = 7),
+        strip.text = element_text(size = 10))
+```
+
+Is there a kind of visible relationship between each predictor and the target? In order to try to make plots more readable, geom_hex() has been used instead of geom_point().
+
+```{r}
+#| echo: false
+
+DataTrainLong2 <- DataTrain|>
+  select(-c(StrengthCategory, dayRange))|>
+  pivot_longer(cols = -c(CompressiveStrength),
+               names_to = "variable",
+               values_to = "value")
+
+
+DataTrainLong2|>
+  ggplot(aes(x = value, y = CompressiveStrength))+
+  geom_hex(alpha = 0.7)+
+  facet_wrap(~ variable,
+             ncol = 3,
+             scales = "free")+
+  labs(x = "Predictors' values",
+       y = "Compressive Strength",
+       title = "Correlation between each predictor and target variable")+
+  theme(legend.position = "bottom",
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8),
+        plot.title = element_text(size = 14),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.text.x = element_text(size = 7),
+        axis.text.y = element_text(size = 7),
+        strip.text = element_text(size = 10))
+```
+
+At a first glance I can actually observe that water, cement and (consequentially) water/cement ratio show a somehow clearly visibile linear relation with target values, while other point-plots show undistinctive clouds.
+
+### 2.1.3. Multivariate predictors analysis
+
+Finally, are predictors correlated with each other? Are all of them really useful during the next ML models' training phase? Is it possibile/necessary to select some feature rather than using all of them, even if the number of feature is, all in all, quite limited? Visualizing the existing correlations is the next step.
+
+```{r}
+#| echo: false
+
+EdaCorMatr <- round(cor(DataTrain[,-c(9, 10, 12)], use = "complete.obs"), 1)
+
+ggcorrplot(EdaCorMatr,
+                 hc.order = TRUE,
+                 type = "lower",
+                 lab = TRUE,
+                 lab_size = 3,
+                 tl.cex = 7,
+                 digits = 1,
+                 title = "Predictors' correlation",)
+
+```
+
+There's only a robustly high value in correlation (waterCementRatio vs Cement). Quite suriprisingly the same high correlation is not evident between this ratio and it other component(water).
+
+## 2.2. Conclusions
+
+1.  Insight about skewness:
+
+-   high skewness for one predictor (Days) (Fisher's Gamma Index \> 3),
+-   five predictors (waterCementRation, Superplaticize, Blast, Cement, FlyAsh) with a moderate skewness (values between 0.5 and 1),
+-   the remaining three features show a low-level of skewness.
+
+A transformation to handle this shape distribution is to be evaluated. Specifically, it will be interesting to try a selective transformation only on extremely skewed variables.
+
+2.  Insight about kurtosis:
+
+-   Days feature is strongly leptokurtic (around 12),
+-   all remaining features have a kurtosis index below 2 (from 1.4 to -1.4) which testify a significant platykurtic distribution.
+
+3.  Outliers do exist, but it can be assumed that cases with very high or low values are explainable by the final scope for which that concrete blend has been calculated.
+
+4.  Only two predictors are correlated between themselves. Cement and (the new created) waterCementRatio.
+
+# 3. TRAINING AND TESTING ML MODELS WITH WORKFLOW_SETS PACKAGE
+
+Some features have a non-normal distribution visible via skewness and/or kurtosis. In order to get a performing ML model, an effective pre-processing path is to be selected. Specifically, I'm interested in checking if a general predictors' transformation works better or worst than a targeted feature transformation. During preprocessing phase, it'll be convenient to handle:
+
+-   the skewness of some or all predictors,
+
+-   the kurtosis of some or all predictors,
+
+-   the skewness and the kurtosis of target variable.
+
+Above mentioned skewness and kurtosis is supposed to be reduced with a power transformation (Yeo-Johnson) that is applied to either all predictors, or a group of them; in both cases, target variable will be either transformed or kept with its original scale.
+
+To keep the process simple, I'll pick only a couple of models that both seem appropriate to this case and are supposed to be sensitive to any of the above mentioned "issues" referred to dataset features:
+
+-   XGBoost (sensible to outliers),
+
+-   linear regression (sensible to skewness).
+
+Regarding to metric, the need for transforming variables (possibly including output as well) involves to use only metrics not expressed in the target variable's scale in order to keep results comparable. To this purpose, R-squared seems to fit the bill. It expresses the proportion of the variance in the response variable returned by a model that can be explained by the predictor variables. Its values ranges from 0 (worst predictive model) to 1 (best predictive model) despite the scale of features used.
+
+## 3.1. Training
+
+### 3.1.1. Setting cross validation and metrics selection
+
+As far as cross validation is concerned, the dataset small dimension implies a limited number of folders (5 in this case).
+
+```{r}
+#| echo: false
+#| warning: false
+
+set.seed(123, sample.kind = "Rounding")
+```
+
+```{r}
+#| echo: false
+
+WfSetCvFolds <- vfold_cv(DataTrain, v = 5)
+
+custom_metrics <- metric_set(rsq)
+```
+
+### 3.1.2. Preprocessing recipes
+
+1.  The first recipe is as basic as possible. It only removes two categorical variable I'm not interested in using that I've created for explorative puroposes. Here we basically have no preprocessing.
+
+```{r}
+#| echo: false
+
+WfSetRecipe1Plain <- DataTrain|>
+  recipe(CompressiveStrength ~ .)|>
+  step_rm(dayRange, StrengthCategory)
+```
+
+2.  The second recipe comes in two version (applied both to all features and to a group of them). Specifically, as far as skewness is concerned, I want to transform: Days, waterCementRation, Superplasticizer, Blast, Cement and FlyAsh. Regarding to kurtosis issue, I'd only need to work on Days beacuse all other predictors have a platykurtic shape which indicates lighter tails and a flatter peak (thus fewer outliers). Of course, the step to remove dayRange and StrengthCategory is confirmed.
+
+```{r}
+#| echo: false
+
+WfSetRecipe2All <- DataTrain|>
+  recipe(CompressiveStrength ~ .)|>
+  step_rm(dayRange, StrengthCategory)|>
+  step_YeoJohnson(all_predictors())
+
+
+WfSetRecipe2Any <- DataTrain|>
+  recipe(CompressiveStrength ~ .)|>
+  step_rm(dayRange, StrengthCategory)|>
+  step_YeoJohnson(Days,
+                  waterCementRatio,
+                  Superplasticizer,
+                  BlastFurnaceSlag,
+                  Cement,
+                  FlyAsh)
+```
+
+3.  A third group of recipe takes into account the transformation of the target variable along with all (or some of) preditors in order to see if models' predictive capability improves.
+
+```{r}
+#| echo: false
+
+WfSetRecipe3All_target <- DataTrain|>
+  recipe(CompressiveStrength ~ .)|>
+  step_rm(dayRange, StrengthCategory)|>
+  step_YeoJohnson(all_predictors(),
+                  CompressiveStrength)
+
+
+WfSetRecipe3Any_target <- DataTrain|>
+  recipe(CompressiveStrength ~ .)|>
+  step_rm(dayRange, StrengthCategory)|> 
+  step_YeoJohnson(Days,
+                  waterCementRatio,
+                  Superplasticizer,
+                  BlastFurnaceSlag,
+                  Cement,
+                  FlyAsh,
+                  CompressiveStrength)
+```
+
+### 3.1.3. Model Specifications
+
+There are several of ML models out there. The aim of this project is not to test each of them and find the best, but evaluating how feature transformation impact on the overall performance. To keep the whole process simple, a couple of engines may be enough:
+
+1\. linear regression,
+
+2\. XgBoost.
+
+```{r}
+#| echo: false
+
+WfSetModXgb <-
+  boost_tree(tree_depth = tune(),
+             trees = tune())|>
+  set_engine("xgboost")|>
+  set_mode("regression")
+
+WfSetModLR <-
+  linear_reg()|>
+  set_engine("lm")|>
+  set_mode("regression")
+```
+
+### 3.1.4. Workflow Sets
+
+Now, I use the powerful workflow_set{} package to combine every recipe with every model, obtaining the following ten combinations:
+
+1.  No preprocessing + Linear regression.
+
+2.  No preprocessing + XgBoost.
+
+3.  Yeo-Johnson transformation applied to all predictors + Linear regression.
+
+4.  Yeo-Johnson transformation applied to all predictors + XgBoost.
+
+5.  Yeo-Johnson transformation applied to a group of (chosen) predictors + Linear regression.
+
+6.  Yeo-Johnson transformation applied to a group of (chosen) predictors + XgBoost.
+
+7.  Yeo-Johnson transformation applied to all predictors and target feature + Linear regression.
+
+8.  Yeo-Johnson transformation applied to all predictors and target feature + XgBoost.
+
+9.  Yeo-Johnson transformation applied to a group of (chosen) predictors and target feature + Linear regression.
+
+10. Yeo-Johnson transformation applied to a group of (chosen) predictors and target feature + XgBoost.
+
+```{r}
+#| echo: false
+
+WfSetWorkflows <-
+  workflow_set(preproc = list(NoPrep = WfSetRecipe1Plain,
+                              YjAll = WfSetRecipe2All,
+                              YjAny = WfSetRecipe2Any,
+                              YjAll_target = WfSetRecipe3All_target,
+                              YjAny_target = WfSetRecipe3Any_target),
+               models = list(LR = WfSetModLR,
+                             Xgb = WfSetModXgb))
+```
+
+### 3.1.5. Tuning and selection best performing workflow and hyperparameters
+
+To choose the best performing workflow, it's necessary to extract the results (expressed in terms of rsq) for every workflow that has been trained.
+
+```{r}
+#| echo: false
+#| warning: false
+
+WfSetGridCtrl<- control_grid(
+  save_pred = TRUE,
+  parallel_over = "resamples",
+  save_workflow = TRUE)
+
+WfSetGridResults <-
+  WfSetWorkflows %>%
+  workflow_map(
+    seed = 1503,
+    resamples = WfSetCvFolds,
+    grid = 5,
+    metrics = custom_metrics,  
+    control = WfSetGridCtrl)
+
+WfSetRankResults <- WfSetGridResults|>
+  rank_results(rank_metric = "rsq",
+               select_best = FALSE)|>
+  select(wflow_id, .metric, mean, rank)|>
+  group_by(wflow_id, .metric)|>
+  summarize(CvAvgScore = mean(mean), .groups = "drop")|>
+  arrange(desc(CvAvgScore))|>
+  mutate(Rank = dense_rank(desc(CvAvgScore)))|>
+  arrange(Rank)
+
+WfSetRankResults|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "hold_position"),
+                position = "left",
+                full_width = FALSE)
+
+```
+
+According to rsq metric we can observe that XgBoost brings definitely better performance than linear regression regardless of preprocessing steps. Specifically, XGBoost model's perfomances are pretty steady and show a very limited range: from 0.9127 to 0.9175, while linear regression rsq varies from 0.6136 to 0.8149. This confirms that XGBoost is less sensitive to dataset issues like outliers, skewness etc and thus to preprocessing activities. On the other hand, skewness and/or kurtosis have stonger impact on linear regression model and this requires a significant handling before running models. Nevertheless, even after such a preprocessing session, the "plain" XGBoost model still performs better than the most intensively preprocessed workflow with LR model.
+
+Let's pick the best hyperparameters that have been used during model training (5 combinations have been set in the workflow mapping).
+
+```{r}
+#| echo: false
+
+WfSetBestResult <- 
+  WfSetGridResults |> 
+  extract_workflow_set_result("YjAny_target_Xgb") |>
+  select_best(metric = "rsq")
+
+```
+
+```{r}
+#| echo: false
+
+WfSetBestResult|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "hold_position"),
+                position = "left",
+                full_width = FALSE)
+```
+
+## 3.2. Testing
+
+### 3.2.1. Performance on the test set
+
+At this stage, the best workflow with the optimal hyperparameters have to be used on the test set (through last_fit() command) to understand which performace they lead to.
+
+```{r}
+#| echo: false
+
+WfSetTestResults <- 
+  WfSetGridResults %>% 
+  extract_workflow("YjAny_target_Xgb") %>% 
+  finalize_workflow(WfSetBestResult) %>% 
+  last_fit(split = DataSplit,
+           metrics = custom_metrics) 
+```
+
+```{r}
+#| echo: false
+
+collect_metrics(WfSetTestResults)|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "hold_position"),
+                position = "left",
+                full_width = FALSE)
+```
+
+An rsq equal to 0.96 states that the chosen model is able to expalin the 96% of variance of the test dataset. Quite suriprisingly, this result outperform the rsq of training phase where 0.91 rsq was reached.
+
+As previuosly said, the model selection has been based on rsq due to the tranformations that in some cases have been applied to the target variable.
+
+It may be interesting measuring other metrics (notably RMSE and MAE) on the test dataset transformed according to the preprocess recipe that has been choosen (Yeo-Jonhson applied to both some predictors and target feature) so to have a more complete view of the model's prections ability.
+
+To to that, we need to prep the recipe and apply to test dataset and then extract RMSE and MAE which we are interested to investigate.
+
+```{r}
+#| echo: false
+
+# rmse on test set
+
+WfSetTestResults_rmse <- 
+  WfSetGridResults %>% 
+  extract_workflow("YjAny_target_Xgb") %>% 
+  finalize_workflow(WfSetBestResult) %>% 
+  last_fit(split = DataSplit,
+           metrics = metric_set(rmse)) # fisso la metrica rmse come oggetto metric_set
+
+collect_metrics(WfSetTestResults_rmse)|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "hold_position"),
+                position = "left",
+                full_width = FALSE)
+```
+
+```{r}
+#| echo: false
+
+# mae on test set
+
+WfSetTestResults_mae <- 
+  WfSetGridResults %>% 
+  extract_workflow("YjAny_target_Xgb") %>% 
+  finalize_workflow(WfSetBestResult) %>% 
+  last_fit(split = DataSplit,
+           metrics = metric_set(mae))
+
+collect_metrics(WfSetTestResults_mae)|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "hold_position"),
+                position = "left",
+                full_width = FALSE)
+```
+
+To evaluate this metrics, it is necessary to know the content of the test dataset preprocessed with the Yeo-Johnson transformation applied to a group of predictors (Days, waterCementRatio, Superplasticizer, BlastFurnaceSlag, Cement and FlyAsh) and target.
+
+```{r}
+#| echo: false
+
+# prep recipe on test set and extract transformed test dataset
+
+WfSetRecipeYjAny_target <- DataTest|>
+  recipe(CompressiveStrength ~ .)|>
+  step_rm(dayRange, StrengthCategory)|> # step "base" per pulire il dataset da dati categoriali
+  step_YeoJohnson(Days,
+                  waterCementRatio,
+                  Superplasticizer,
+                  BlastFurnaceSlag,
+                  Cement,
+                  FlyAsh,
+                  CompressiveStrength)|>
+  prep()
+
+DataTestPrepYjAny_target <- WfSetRecipeYjAny_target|>
+  juice()
+```
+
+After, transforming test set, the values of the target value (CompressiveStrength) changes significantly.
+
+```{r}
+#| echo: false
+
+targetPrepMean <-
+  round(mean(DataTestPrepYjAny_target$CompressiveStrength),2)
+
+targetOrigMean <-
+  round(mean(DataTest$CompressiveStrength), 2)
+
+DataTestTargetMean <-
+  tibble(Test_dataset = c("Original", "Preprocessed"),
+         Target_variable_mean = c(targetOrigMean, targetPrepMean))
+
+DataTestTargetMean|>
+  kable(format = "latex",
+        booktabs = TRUE)|>
+  kable_styling(latex_options = c("striped", "hold_position"),
+                position = "left",
+                full_width = FALSE)
+```
+
+The rsq (0.96) explain the 96% of variance. It's a solid point of start. Since this is even better than the training rsq level (0.91), it's useful to chech for other metrics (RSME and MAE) which are calculated on the test set only after preprocessing it with the same recipe applied to the training set.
+
+To sum up:
+
+1.  The mean of the target variable in the preprocessed test set is 10.31.
+
+2.  With a 0.96 of rsq the model seems to be able to well explain the variability of the target variable.
+
+3.  The RMSE equal to 0.79 espresses a value less than 10% of the target avarage (7.66%).
+
+4.  A Mean Absolute Error (MAE) lower than the RMSE highlights that errors are, in avarage, pretty limited. RMSE bigger than MAE points out there are some big errors that affect more significantly the first metric rather than the latter. The RMSE/MAE ratio is about 1.52 and suggest that error distribution is non perfectly uniform but still pretty regular. A level of this ratio below 2 testifies that outliers are not "having major impact "ruling" the model. The difference between RMSE and MAE may be caused by some errors bigger than others but it doesn't seem such a compromising issue. An analysis of residual seems appropriate anyway.
+
+All in all, it seems that the model generalizes well from the training data to the test data, avoiding both overfitting and underfitting.
+
+### 3.2.2. Residuals analysis
+
+```{r}
+#| echo: false
+
+WfSetResults <- WfSetTestResults|>
+  collect_predictions()|>
+  mutate(residuals = .pred - CompressiveStrength)
+```
+
+```{r}
+#| echo: false
+
+p7_1 <- WfSetResults|>
+ggplot(aes(x = .pred, y = residuals)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "red") +
+  scale_y_continuous(limits = c(-10, 10))+
+  labs(title = "Residuals vs Predicted values",
+       x = "Predicted values",
+       y = "Residuals") +
+  theme_minimal()
+
+
+# Residuals distribution
+
+p7_2 <- WfSetResults|>
+  ggplot(aes(x = residuals))+
+  geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+  labs(title = "Residuals distribution",
+       x = "Residuals",
+       y = "Count") +
+  theme_minimal()
+
+
+# Q-Q plot 
+
+p7_3 <- WfSetResults|>
+ggplot(aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(title = "Residuals vs Theoretical",
+       subtitle = "Q-Q Plot",
+       x = "Theoretical",
+       y = "Residuals") +
+  theme_minimal()
+
+```
+
+```{r}
+#| echo: false
+
+p7_1 / (p7_2 + p7_3)
+```
+
+Based on the residuals analysis, it is possible to point out the following insights:
+
+1.  Residuals vs Predicted Values plot checks for patterns in residuals to assess whether the regression assumptions (such as linearity and homoscedasticity) hold. The residuals appear to be scattered randomly around the red horizontal line at zero. This indicates that there is no obvious systematic pattern, suggesting that the model captures the underlying structure in the data well. If the residuals formed a clear pattern (e.g., a curve or funnel shape), it would indicate issues like non-linearity or heteroscedasticity.
+
+2.  Residuals Distribution histogram assesses the normality of residuals. The residuals show a roughly symmetric and unimodal distribution centered around zero, which is close to the normal distribution assumption. However, there may be slight deviations from normality (e.g., some outliers or slight skew), but overall, the distribution looks reasonable for most regression tasks.
+
+3.  Q-Q Plot compares the quantiles of the residuals to a theoretical normal distribution. The points mostly align with the red diagonal line, which indicates that the residuals approximately follow a normal distribution. Some deviations are visible at the tails (extreme values), suggesting potential outliers or heavy tails in the residual distribution.
+
+The model seems to perform well: residuals are randomly distributed (no pattern), suggesting linearity and independence and appear approximately normally distributed, with slight deviations at the tails.
+
+These plots suggest that the model is appropriate for the data, though further investigation into potential outliers or extreme values in the residuals might be warranted if they influence model performance.
+
+# CONCLUSIONS
+
+This project has intended to explore, in the context of a regression problem, the impact of different preprocessing recipe on different models' performances and to use, when possibile, tools for optimize the visualization of plots and table so to make the final document more readable.
+
+## 1. About the impact of dataset preprocessing on models' performance
+
+As a matter of fact, XgBoost has performed much better than linear regression. Specifically, some insight has been detected:
+
+1\. XgBoost model has not benefited from major gains by adopting preprocessing steps, while linear regression models' performances have changed significantly when different proprocessing recipes have been introduced.
+
+2\. Target variable transformation has caused slight but visible better scores (third decimal digit).
+
+3\. Transforming all predictors rather than only a subset has not resulted in noticeable differences in the rsq scores.
+
+4\. Rsq has been used to evaluate models' performance since this score is expressed in a standard e neutral scale. Once the model has been selected, other metrics (RMSE and MAE) have been used along with rsq to obtain more pieces of information and, thus, a more complete review of results.
+
+5\. Combining scores and residuals analysis seems to be a good practice to better read model's performance.
+
+## 2. About the effectiveness of the packages used throughout this work
+
+1.  workflow_set confirms itself as a very useful package to mix recipes and models and to select the best combination.
+2.  EDA may gain some benefits from the more efficient plot exposure offerered by patchwork package. The opportunity to order in one or more rows a group of plots allows to create a sequence that help creating an effective storytelling.
